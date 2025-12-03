@@ -82,20 +82,10 @@ def generate_synthetic_crypto_data(days: int = 180) -> pd.DataFrame:
 
 
 def generate_synthetic_macro_data(days: int = 180) -> pd.DataFrame:
-    """Simulate macroeconomic indicators aligned to the same calendar days.
-
-    The indicators include a weekly risk-free rate proxy and a monthly inflation
-    signal. Forward filling expands low-frequency points to daily resolution.
-    """
-
     dates = pd.date_range(end=pd.Timestamp.today().normalize(), periods=days, freq="D")
-
-    # Weekly rate changes and monthly inflation estimates.
-    weekly_rate = pd.Series(RNG.normal(0.02, 0.002, len(dates) // 7 + 1),
-                            index=dates[::7])
-    monthly_cpi = pd.Series(RNG.normal(0.005, 0.0015, len(dates) // 30 + 1),
-                            index=dates[::30])
-
+    weekly_rate = pd.Series(RNG.normal(0.02, 0.002, len(dates[::7])), index=dates[::7])
+    monthly_idx = dates[::30]
+    monthly_cpi = pd.Series(RNG.normal(0.005, 0.0015, len(monthly_idx)), index=monthly_idx)
     macro_df = pd.DataFrame(index=dates)
     macro_df["risk_free_rate"] = weekly_rate.reindex(dates).ffill()
     macro_df["inflation_rate"] = monthly_cpi.reindex(dates).ffill()
