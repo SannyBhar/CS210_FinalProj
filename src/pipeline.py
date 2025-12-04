@@ -13,11 +13,13 @@ CSV files, and keep the cleaning/merging/modeling steps intact.
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression
@@ -25,6 +27,14 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+
+from data_ingestion.crypto_loader import (
+    fetch_crypto_history,
+    load_crypto_from_db,
+    save_crypto_to_db,
+)
+
+load_dotenv()
 
 # Set a global random seed for reproducibility across all synthetic data and models.
 RNG = np.random.default_rng(seed=42)
@@ -82,10 +92,20 @@ def generate_synthetic_crypto_data(days: int = 180) -> pd.DataFrame:
 
 
 def generate_synthetic_macro_data(days: int = 180) -> pd.DataFrame:
+    """Simulate macroeconomic indicators aligned to the same calendar days.
+
+    The indicators include a weekly risk-free rate proxy and a monthly inflation
+    signal. Forward filling expands low-frequency points to daily resolution.
+    """
+
     dates = pd.date_range(end=pd.Timestamp.today().normalize(), periods=days, freq="D")
-    weekly_rate = pd.Series(RNG.normal(0.02, 0.002, len(dates[::7])), index=dates[::7])
-    monthly_idx = dates[::30]
-    monthly_cpi = pd.Series(RNG.normal(0.005, 0.0015, len(monthly_idx)), index=monthly_idx)
+
+    # Weekly rate changes and monthly inflation estimates.
+    weekly_rate = pd.Series(RNG.normal(0.02, 0.002, len(dates) // 7 + 1),
+                            index=dates[::7])
+    monthly_cpi = pd.Series(RNG.normal(0.005, 0.0015, len(dates) // 30 + 1),
+                            index=dates[::30])
+
     macro_df = pd.DataFrame(index=dates)
     macro_df["risk_free_rate"] = weekly_rate.reindex(dates).ffill()
     macro_df["inflation_rate"] = monthly_cpi.reindex(dates).ffill()
@@ -239,10 +259,75 @@ def evaluate_model(model: Pipeline, X_test: pd.DataFrame, y_test: pd.Series) -> 
     }
 
 
-def run_pipeline(days: int = 180, test_size: float = 0.2, n_jobs: int = -1) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Execute the full synthetic pipeline and return merged data and metrics."""
+def _flatten_crypto_columns(crypto_df: pd.DataFrame, symbols: List[str]) -> pd.DataFrame:
+    """Flatten a MultiIndex column DataFrame to a single symbol OHLCV frame."""
 
-    crypto_df = generate_synthetic_crypto_data(days)
+    if crypto_df.empty:
+        return crypto_df
+
+    if isinstance(crypto_df.columns, pd.MultiIndex):
+        primary_symbol = symbols[0].upper()
+        if primary_symbol not in crypto_df.columns.get_level_values(1):
+            raise RuntimeError(
+                f"Primary symbol '{primary_symbol}' not found in returned data."
+            )
+        flattened = crypto_df.xs(primary_symbol, level=1, axis=1)
+    else:
+        flattened = crypto_df
+
+    flattened = flattened.sort_index()
+    if getattr(flattened.index, "tz", None) is not None:
+        flattened.index = flattened.index.tz_localize(None)
+    flattened.index.name = "timestamp"
+    flattened.columns = [col.lower() for col in flattened.columns]
+    expected_cols = {"open", "high", "low", "close", "volume"}
+    missing = expected_cols.difference(flattened.columns)
+    if missing:
+        raise RuntimeError(
+            "Missing expected OHLCV columns after flattening: " + ", ".join(sorted(missing))
+        )
+    ordered_cols = ["open", "high", "low", "close", "volume"]
+    return flattened[ordered_cols]
+
+
+def run_pipeline(
+    days: int = 180,
+    test_size: float = 0.2,
+    n_jobs: int = -1,
+    data_source: str = "api",
+    symbols: List[str] | None = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Execute the full pipeline (API or synthetic) and return merged data and metrics."""
+
+    symbols = symbols or ["BTC", "ETH"]
+
+    if data_source not in {"api", "synthetic"}:
+        raise ValueError("data_source must be either 'api' or 'synthetic'")
+
+    if data_source == "api":
+        api_key = os.getenv("FREECRYPTO_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "FREECRYPTO_API_KEY environment variable not set. "
+                "Populate it in your environment or .env file, or run with --data-source synthetic."
+            )
+
+        # Fetch and persist latest prices before loading for modeling.
+        for sym in symbols:
+            df = fetch_crypto_history(sym, days=days, api_key=api_key)
+            save_crypto_to_db(df)
+
+        end = pd.Timestamp.utcnow().normalize()
+        start = end - pd.Timedelta(days=days)
+        crypto_raw = load_crypto_from_db(symbols, start, end)
+        if crypto_raw.empty:
+            raise RuntimeError(
+                "No crypto price data returned from the database; verify ingestion and table contents."
+            )
+        crypto_df = _flatten_crypto_columns(crypto_raw, symbols)
+    else:
+        crypto_df = generate_synthetic_crypto_data(days)
+
     macro_df = generate_synthetic_macro_data(days)
     sentiment_df = generate_synthetic_sentiment(days)
 
@@ -282,7 +367,7 @@ def _parse_args() -> argparse.Namespace:
         "--days",
         type=int,
         default=180,
-        help="Number of synthetic days to simulate (default: 180)",
+        help="Number of calendar days of data to fetch or simulate (default: 180)",
     )
     parser.add_argument(
         "--test-size",
@@ -296,12 +381,30 @@ def _parse_args() -> argparse.Namespace:
         default=-1,
         help="Parallelism for tree models; -1 uses all available cores",
     )
+    parser.add_argument(
+        "--data-source",
+        choices=["api", "synthetic"],
+        default="api",
+        help="Use 'api' to fetch live OHLCV data (default) or 'synthetic' to simulate offline.",
+    )
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        default=["BTC", "ETH"],
+        help="Crypto tickers to ingest when using the API; the first symbol is used for modeling.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-    merged, metrics = run_pipeline(days=args.days, test_size=args.test_size, n_jobs=args.n_jobs)
+    merged, metrics = run_pipeline(
+        days=args.days,
+        test_size=args.test_size,
+        n_jobs=args.n_jobs,
+        data_source=args.data_source,
+        symbols=args.symbols,
+    )
 
     print("Merged dataset sample (last 5 rows):")
     print(merged.tail())

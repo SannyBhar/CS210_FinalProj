@@ -2,9 +2,9 @@
 
 This project demonstrates a fully reproducible Python workflow for cleaning and
 merging cryptocurrency, macroeconomic, and sentiment signals to forecast
-next-day price movements. The included script uses synthetic data so it can run
-offline without paid services. You can swap in your own CSV exports or free
-APIs to power the same pipeline.
+next-day price movements. The pipeline now supports live OHLCV ingestion from
+FreeCryptoAPI (using environment variables for secrets) and still offers a
+synthetic mode for offline exploration.
 
 ## Features
 - Synthetic generators for OHLCV prices, macro indicators, and sentiment scores
@@ -20,22 +20,35 @@ APIs to power the same pipeline.
    source .venv/bin/activate
    pip install -r requirements.txt
    ```
-2. Run the pipeline (uses 180 synthetic days by default):
+2. Copy the environment template and add your credentials (never commit your
+   filled-in `.env` file):
    ```bash
-   python src/pipeline.py
+   cp .env.example .env
+   # edit .env to set DATABASE_URL and FREECRYPTO_API_KEY
    ```
-3. Adjust parameters as needed:
+3. Run the pipeline with live API ingestion (default data source is `api`):
    ```bash
-   python src/pipeline.py --days 365 --test-size 0.25 --n-jobs 4
+   python src/pipeline.py --days 180 --symbols BTC ETH
+   ```
+   The first symbol in `--symbols` is used for modeling after prices are stored
+   in PostgreSQL.
+4. Prefer an offline run? Switch to synthetic data:
+   ```bash
+   python src/pipeline.py --data-source synthetic --days 180
+   ```
+5. Adjust other parameters as needed:
+   ```bash
+   python src/pipeline.py --days 365 --test-size 0.25 --n-jobs 4 --data-source api
    ```
 
 The script prints the tail of the merged dataset and evaluation metrics for each
 model on a hold-out test split.
 
-## Adapting to Real Data
-- Replace the synthetic generation functions in `src/pipeline.py` with loaders
-  that read your CSV exports or free API responses.
-- Keep the `merge_datasets` and `engineer_features` steps to preserve the
-  cleaning logic and feature set.
-- Add or remove models inside `build_models` to experiment with additional
-  algorithms.
+## Notes on Secrets and Data Sources
+- `.env.example` documents the required environment variables. Keep your API key
+  and database credentials in a private `.env` file that is excluded from git.
+- `src/data_ingestion/crypto_loader.py` contains the ingestion helpers for
+  FreeCryptoAPI. Update `BASE_URL` and parameters if the provider's endpoint
+  differs.
+- Macro and sentiment data remain synthetic placeholders; swap in your preferred
+  loaders while keeping `merge_datasets` and `engineer_features` intact.
