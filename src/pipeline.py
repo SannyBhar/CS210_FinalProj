@@ -28,11 +28,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from data_ingestion.crypto_loader import (
-    fetch_crypto_history,
-    load_crypto_from_db,
-    save_crypto_to_db,
-)
+from data_ingestion.crypto_loader import fetch_crypto_history, load_crypto_from_db, save_crypto_to_db
 
 load_dotenv()
 
@@ -101,10 +97,10 @@ def generate_synthetic_macro_data(days: int = 180) -> pd.DataFrame:
     dates = pd.date_range(end=pd.Timestamp.today().normalize(), periods=days, freq="D")
 
     # Weekly rate changes and monthly inflation estimates.
-    weekly_rate = pd.Series(RNG.normal(0.02, 0.002, len(dates) // 7 + 1),
-                            index=dates[::7])
-    monthly_cpi = pd.Series(RNG.normal(0.005, 0.0015, len(dates) // 30 + 1),
-                            index=dates[::30])
+    weekly_idx = dates[::7]
+    monthly_idx = dates[::30]
+    weekly_rate = pd.Series(RNG.normal(0.02, 0.002, len(weekly_idx)), index=weekly_idx)
+    monthly_cpi = pd.Series(RNG.normal(0.005, 0.0015, len(monthly_idx)), index=monthly_idx)
 
     macro_df = pd.DataFrame(index=dates)
     macro_df["risk_free_rate"] = weekly_rate.reindex(dates).ffill()
@@ -165,7 +161,8 @@ def engineer_features(merged: pd.DataFrame) -> Dataset:
     df["ma_ratio"] = df["ma_7"] / df["ma_30"]
 
     # Volume and sentiment momentum.
-    df["volume_z"] = (df["volume"] - df["volume"].rolling(14).mean()) / df["volume"].rolling(14).std()
+    volume_std = df["volume"].rolling(14).std()
+    df["volume_z"] = (df["volume"] - df["volume"].rolling(14).mean()) / volume_std.replace(0, 1)
     df["sentiment_7d"] = df["sentiment"].rolling(window=7).mean()
 
     # Macroeconomic differences to capture trend direction.
@@ -305,11 +302,11 @@ def run_pipeline(
         raise ValueError("data_source must be either 'api' or 'synthetic'")
 
     if data_source == "api":
-        api_key = os.getenv("FREECRYPTO_API_KEY")
+        api_key = os.getenv("COINGECKO_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "FREECRYPTO_API_KEY environment variable not set. "
-                "Populate it in your environment or .env file, or run with --data-source synthetic."
+                "COINGECKO_API_KEY environment variable not set. "
+                "Add it to your .env or environment, or run with --data-source synthetic."
             )
 
         # Fetch and persist latest prices before loading for modeling.
@@ -320,10 +317,6 @@ def run_pipeline(
         end = pd.Timestamp.utcnow().normalize()
         start = end - pd.Timedelta(days=days)
         crypto_raw = load_crypto_from_db(symbols, start, end)
-        if crypto_raw.empty:
-            raise RuntimeError(
-                "No crypto price data returned from the database; verify ingestion and table contents."
-            )
         crypto_df = _flatten_crypto_columns(crypto_raw, symbols)
     else:
         crypto_df = generate_synthetic_crypto_data(days)

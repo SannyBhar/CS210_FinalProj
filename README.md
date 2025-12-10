@@ -3,7 +3,7 @@
 This project demonstrates a fully reproducible Python workflow for cleaning and
 merging cryptocurrency, macroeconomic, and sentiment signals to forecast
 next-day price movements. The pipeline now supports live OHLCV ingestion from
-FreeCryptoAPI (using environment variables for secrets) and still offers a
+CoinGecko (using environment variables for secrets) and still offers a
 synthetic mode for offline exploration.
 
 ## Features
@@ -20,35 +20,46 @@ synthetic mode for offline exploration.
    source .venv/bin/activate
    pip install -r requirements.txt
    ```
-2. Copy the environment template and add your credentials (never commit your
+2. Start PostgreSQL locally and create the database referenced by `DATABASE_URL`
+   (example uses `crypto_project`).
+3. Copy the environment template and add your credentials (never commit your
    filled-in `.env` file):
    ```bash
    cp .env.example .env
-   # edit .env to set DATABASE_URL and FREECRYPTO_API_KEY
+   # edit .env to set DATABASE_URL and COINGECKO_API_KEY
    ```
-3. Run the pipeline with live API ingestion (default data source is `api`):
+4. Run the pipeline with live API ingestion (default data source is `api`):
    ```bash
-   python src/pipeline.py --days 180 --symbols BTC ETH
+   python -m src.pipeline --days 180 --symbols BTC ETH
    ```
    The first symbol in `--symbols` is used for modeling after prices are stored
    in PostgreSQL.
-4. Prefer an offline run? Switch to synthetic data:
+5. Prefer an offline run? Switch to synthetic data:
    ```bash
-   python src/pipeline.py --data-source synthetic --days 180
+   python -m src.pipeline --data-source synthetic --days 180
    ```
-5. Adjust other parameters as needed:
+6. Adjust other parameters as needed:
    ```bash
-   python src/pipeline.py --days 365 --test-size 0.25 --n-jobs 4 --data-source api
+   python -m src.pipeline --days 365 --test-size 0.25 --n-jobs 4 --data-source api
    ```
 
 The script prints the tail of the merged dataset and evaluation metrics for each
 model on a hold-out test split.
 
+## Streamlit Frontend
+Run an interactive UI to configure parameters and inspect results:
+```bash
+streamlit run src/streamlit_app.py
+```
+If you choose the `api` data source, make sure `DATABASE_URL` and `COINGECKO_API_KEY`
+are set in your environment (they are read automatically; no UI input is needed).
+Optional: override the REST endpoint with `COINGECKO_API_URL` and request timeout with
+`COINGECKO_API_TIMEOUT` if you are testing against a mock server.
+
 ## Notes on Secrets and Data Sources
 - `.env.example` documents the required environment variables. Keep your API key
   and database credentials in a private `.env` file that is excluded from git.
 - `src/data_ingestion/crypto_loader.py` contains the ingestion helpers for
-  FreeCryptoAPI. Update `BASE_URL` and parameters if the provider's endpoint
-  differs.
+  CoinGecko. Extend `COINGECKO_IDS` to support additional symbols.
 - Macro and sentiment data remain synthetic placeholders; swap in your preferred
   loaders while keeping `merge_datasets` and `engineer_features` intact.
